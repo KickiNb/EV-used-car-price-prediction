@@ -1,0 +1,898 @@
+---
+title: "Ev used car prediction with Linear Regression"
+author: "Kicki Nocoj"
+date: "2024-04-19"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction   
+
+Creating a model using linear regression to predict used Ev car prices and identifying the most influential features affecting price fluctuations.
+The dataset, sourced from Blocket.se https://www.blocket.se/bilar/sok?q=elbil&amp;filter=%7B%22key%22%3A%2...
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(corrplot)
+library(caTools)
+library(caret)
+library(car)
+library(MASS)  
+library(leaps)  
+library(Metrics)
+library(glmnet)
+library(boot)
+library(httr)
+library(jsonlite)
+```
+# Loading data
+
+```{r}
+# Load data
+evcars <- read.csv("C:/Users/kicki/OneDrive/Documents/ec_utbildning/r_stat/skola/EV-cars1.csv", fileEncoding = "ISO-8859-1", sep = ";")
+
+# View the data
+head(evcars)
+
+dim(evcars)
+
+# Data type
+str(evcars)
+```
+
+# Data Exploration, Data Cleaning and Data Transformation 
+
+```{r}
+# Removing rows and columns that had missing values
+evcars <- evcars[, colSums(is.na(evcars)) != nrow(evcars)]
+evcars <- evcars[!is.na(evcars$Hästkrafter) & !is.na(evcars$Pris),]
+
+# View the data
+head(evcars)
+
+# View the numerical summary of each variable
+summary(evcars)
+
+# Check for missing values
+colSums(is.na(evcars))
+```
+The data has no missing values but we need to convert all character variables to factors for the Regression model.
+```{r}
+# Converting data types to numerical 
+evcars$Pris <- as.numeric(gsub("kr", "", evcars$Pris))
+evcars$Hästkrafter <- as.numeric(evcars$Hästkrafter)
+evcars$Miltal <- as.numeric(evcars$Miltal)
+
+# Converting categorical variables into factors
+evcars$Biltyp <- as.factor(evcars$Biltyp)
+evcars$Färg <- as.factor(evcars$Färg)
+evcars$Modell <- as.factor(evcars$Modell)
+evcars$Märke <- as.factor(evcars$Märke)
+evcars$Län <- as.factor(evcars$Län)
+evcars$Modellår <- as.factor(evcars$Modellår)
+evcars$Drivning <- as.factor(evcars$Drivning)
+
+# View the data
+str(evcars)
+```
+
+
+# EDA
+
+```{r}
+# Plotting Miles and Price
+ggplot(evcars, aes(Miltal, Pris, color = Märke)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = " Price by Mileage", x = "Mileage", y = "Price")
+```
+
+### Result from Price and Miles
+
+* **Negative Correlation**: As mileage increases, the price of the cars tends to decreases across all brands.
+* **Brand prices:** Brands like Tesla, BMW, and Audi appear to have a higher initial price compared to brands like Ford and Nissan at similar mileage points. Some brands have a steeper depreciation curve (e.g., Mercedes Benz), suggesting a faster decrease in price with mileage compared to brands with flatter slopes.
+* **Variability*:* in data points around the regression lines suggests that factors other than mileage also significantly affect the car's price.
+* **Outliers**: There appears to be a few outliers especially in the upper left corner, where we have low mileage with high price, and some outliers where there is high mileage and high price, which could be due to special features of the car, more exclusive cars.
+* **Conclusion**: while mileage is a significant factor in pricing used EV cars, the brand also plays a critical role.
+
+```{r}
+# Plotting Car type and Price 
+ggplot(evcars, aes(Biltyp, Pris, color = Märke)) +
+  geom_point() +
+  labs(title = " Price by Car type and brand", x = "Car Type", y = "Price")
+```
+
+### Result from Car type, brand and Price
+
+* **Variability**: There is a clear price spread within each car type, some brands tend to be more concentrated in specific car type categories and price range. We can see that there is a type of brand influence, certain brands like Mercedes, Bmw and Tesla showing higher median prices. SUVs appear to have the widest price range among all car types, indicating they vary greatly in price, possibly due to different brands, features, or models within this category.
+* **Brands** like Audi, Mercedes Benz, and BMW seem to have higher price points across all car types, particularly SUVs. More affordable brands like Ford, Kia, and Nissan tend to cluster towards the lower end of the price range.
+* **Outliers**: Each car type category has outliers, again these could be cars with extra features and sold as premium cars, thus commanding higher prices.  
+* **Conclusion**: The car type and brand are both significant factors affecting the price of used electric vehicles.
+
+```{r}
+# Price by car type and brand
+ggplot(evcars, aes(Biltyp, Pris, fill = Märke)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Price by Car type and brand", x = "Car Type", y = "Price") +
+  scale_y_continuous(labels = scales::comma)
+```
+
+### Result from Price by Car type and brand
+
+* **Variability**: SUVs display higher median prices across most brands, suggesting that these types of vehicles may be positioned at a higher price point in the market. Luxury brands consistently show higher medians and a broader price range in all car type categories.
+* **Outliers**: Numerous outliers, especially in the SUV and halvkombi categories, could indicate the presence of premium class cars or those with high-end features, though additional factors such as condition, location, and model year may also contribute to these values.
+* **Distribution Spread:** The variation in the height of the boxes (IQR) between different brands and car types reflects a diversity in the price ranges of vehicles offered, which could be indicative of the various pricing strategies and market segments targeted by manufacturers.
+
+
+```{r}
+# Price by car type
+ggplot(evcars, aes(Biltyp, Pris)) +
+  geom_boxplot(aes(fill = Biltyp)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Price by Car Type", x = "Car Type", y = "Price")
+```
+
+### Result from Price by Car Type
+* **Variability**: There is variability in price medians among the different car types. SUVs, in particular, have a higher median price, suggesting that this category typically features higher-priced models compared to other car types like Halvkombi, Kombi, and Sedan.
+* **Outliers**: The SUV category is marked by a significant number of outliers, as are the Halvkombi and Sedan categories. These outliers may indicate the presence of premium models with higher pricing within these car types, reinforcing earlier observations that luxury or feature-rich vehicles tend to skew the upper end of the price range. 
+* **Spread**: The interquartile range, represented by the height of the boxplots, shows variation in price spread across car types. Sedans and SUVs, in particular, display wider interquartile ranges, indicating greater price variability within these categories. This suggests a diverse market for these car types, with a mix of standard and premium models catering to a range of consumer preferences.
+* **Conclusion**: The analysis of the boxplots underscores the distinct market positioning of SUVs as higher-priced vehicles, and the presence of premium offerings across the Halvkombi, Sedan, and SUV categories. The spread of prices within the Sedan and SUV categories hints at a rich variety of options available to consumers, from economical choices to luxury investments.
+
+
+```{r}
+# Price by car brand
+ggplot(evcars, aes(Märke, Pris)) +
+  geom_boxplot(aes(fill = Märke)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Price by Brand", x = "Brand", y = "Price")
+```
+
+### Result from Price by Brand
+
+* **Variability**: There is clear variability in median prices across brands, with luxury brands like Mercedes Benz and Tesla generally showcasing higher medians. Audi, BMW, and Mercedes Benz, traditionally premium brands, have a noticeably higher price floor, indicating their entry-level prices are higher than those of more budget-friendly brands like Ford and Hyundai.  
+* **Outliers**: there are several outliers present in more than half the brands, which could represent luxury models or vehicles with exceptional features and low mileage.
+* **Spread**: the spread within each car brand varies, some having a wider interquartile range, indicating a greater variety of car prices within those brands.
+* **Conclusion**: The observed outliers and the breadth of the price ranges within brands underscore the presence of both standard and premium offerings. This variability suggests that consumers have a wide array of choices, from economical to luxury electric vehicles, with brands catering to different segments of the market based on features, performance, and prestige.
+
+
+
+```{r}
+# Price by car color
+ggplot(evcars, aes(Färg, Pris)) +
+  geom_boxplot(aes(fill = Färg)) +
+  labs(title = "Price Distribution by Car Color") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Price by Car Color", x = "Color", y = "Price")
+```
+
+### Result Price by Car color
+
+* **Variability**: Median prices appear to differ among car colors. Typically, darker shades like Mörkblå and Mörkgrå might have higher medians, suggesting these colors could be associated with premium models or preferences.Lighter colors or less common colors such as Ljusgrå, Grön, Orange and Gul could indicate a niche market, possibly with lower median prices.
+* **outliers**: There are likely outliers for colors like Svart  and Grå, Ljusgrå and Vit, which could be due to these colors being preferred for higher-end models or having a wider appeal, thereby encompassing a broader range of vehicle types and prices.
+* **Conclusion**: Car color is a distinctive factor that seems to influence the pricing of used electric vehicles, with some colors potentially commanding higher prices due to market demand or association with premium vehicle models.
+
+# Correlation matrix:
+
+```{r}
+# correlation Evcars with Numerical Features
+num_features <- c("Miltal", "Hästkrafter", "Pris")
+corr_matrix <- cor(evcars[num_features], use = "complete.obs")
+print(corr_matrix)
+
+```
+
+```{r}
+# Visualizing the correlation matrix
+corrplot(corr_matrix, tl.col = "Brown", bg = "white", tl.srt = 35,
+         title = "\n\n Correlation Plot of Evcars data \n", 
+         addCoef.col = "black", type = "full", method = "circle")
+```
+
+### Result from Correlation plot Numerical features
+
+* **Miltal:** There is a weak positive correlation of 0.09 between mileage and horsepower, suggesting that there is little to no linear relationship between these variables.There is a moderate negative correlation of -0.36 between mileage and price. This indicates that as mileage increases, the price of the car tends to decrease, which is a common trend in used vehicle pricing.
+* **Hästkrafter:** The correlation between horsepower and price is 0.69, indicating a strong positive relationship. Indicating that cars with higher horsepower tend to be priced higher.
+* **Conclusion:** The strongest correlation is between horsepower and price, which is consistent with the idea that more powerful cars command higher prices. The negative correlation between mileage and price aligns with market expectations that higher mileage cars are valued less due to wear and usage factors. 
+
+### Correlation with scatter-plot
+
+```{r}
+# Scatter plot variables in pairs
+pairs(~ Miltal + Hästkrafter +Pris, data = evcars, main = "Scatterplot Matrix")
+```
+
+### Result from the Scatter-plot
+
+Confirms the result from the correlation matrix. Mileage negatively affects the price, while horsepower seems to have a positive effect on the price.  
+
+# Likelihood ratio test (G-test) for Categorical variabels
+
+```{r}
+# Selecting Categorical variables 
+cat_vars <- evcars[sapply(evcars, is.factor)]
+
+# Calculate the number of categorical variables
+num_cat_vars <- length(cat_vars)
+
+
+# Initialize an empty matrix to store G-test p-values
+g_test_p_values <- matrix(nrow = num_cat_vars, ncol = num_cat_vars,
+                          dimnames = list(names(cat_vars), names(cat_vars)))
+
+# Compute G-test p-values for each pair of categorical variables
+for (i in seq_along(cat_vars)) {
+  for (j in seq_along(cat_vars)) {
+    if (i != j) {
+      contingency_table <- table(cat_vars[[i]], cat_vars[[j]])
+      g_test <- chisq.test(contingency_table, simulate.p.value = TRUE)
+      p_value <- g_test$p.value
+      g_test_p_values[i, j] <- p_value
+    } else {
+      g_test_p_values[i, j] <- 1  
+    }
+  }
+}
+
+# Print the matrix of G-test p-values
+print(g_test_p_values)
+```
+
+### Result from the G-test
+
+* **Strong Associations:** Most variables show strong associations with each other, which could be due to the interconnected nature of car features. 
+* **Regional Differences:** Fewer associations with the region (Län), could indicate that while car features vary significantly across models, types, and märke, they are more uniformly distributed across different regions.
+
+
+
+
+# The Distribution of Nummerical and Categorical variables
+
+```{r}
+# Plotting Numerical variables 
+num_var <- c("Miltal", "Hästkrafter", "Pris")
+
+for (variable in num_var) {
+var <- ggplot(evcars, aes(.data[[variable]])) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  ggtitle(paste("Distribution of", variable))
+print(var)
+}
+```
+
+### Result Nummerical Variables
+* **Mileage**: distribution of mileage is right-skewed, meaning we have more cars with lower mileage in  the data set, indicating we have more newer or less-used cars.
+* **Horsepower**: the distribution of horsepower seems also to be right-skewed, most of the cars have a moderate amount of horsepower and a few with high horsepower. 
+* **Price**: the price is also right-skewed meaning we have more cars in the lower to medium price range than in the higher one, with some very expensive cars (outliers).
+* **Conclusion:** The skewness in the distributions of these key numerical variables reflects a used EV market that is comprised mainly of vehicles that are more accessible and practical for the general consumer, with a smaller segment of luxury or high-performance cars.
+
+```{r}
+# Categorical variabels
+num_cat <- c("Biltyp", "Färg", "Märke", "Modell", "Län", "Drivning", "Modellår")
+
+for (var in num_cat) {
+cat <- ggplot(evcars, aes(.data[[var]])) +
+    geom_bar(stat = "count", fill = "skyblue", color = "Black") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ggtitle(paste("Distribution of", var))
+    print(cat)
+}
+```
+
+### Result Categorical variables
+
+* **Biltyp (Car-type):**: "Halvkombi" and "Suv" are the most common car types, significantly outnumbering "Kombi" and "Sedan". This suggests a strong market preference for these types of vehicles.
+* **Färg (Color):** We can see that some colors like "Svart", "Vit" and "Grå" are much more common than others, which may reflect consumer preferences for these colors or greater availability in the market. The color of the car could affect the resale value or consumer demand. There is a broad diversity in car colors, although some, like "Orange" and "Brun", are less common, which could be due to less demand or production.
+* **Märke (Brand)**: Brands like "Tesla" and "Volkswagen" show high frequencies, indicating their popularity or a larger share in the second-hand EV market. Other brands have a fairly even distribution, suggesting a competitive variety of options available to consumers.
+* **Modell:** There is a wide range of models available, with some models being more frequent. This could be due to the success of certain models or the time they have been available in the market.
+* **Län (Region):** Stockholms stands out with most cars listed than others, but also Jönköping, Skåne and Västra Götaland. Which could indicate a higher concentration of EV owners or sellers in the capital regions, or possibly better EV infrastructure. 
+* **Drivning (Drive):** There are more two-wheel-drive vehicles than four-wheel drives, which may suggest a preference for the efficiency or cost-effectiveness of two-wheel-drive EVs.
+* **Modellår (Model Year):** More recent model years, particularly 2020 and 2021, have the highest counts, reflecting a rapidly growing or renewing market for EVs.
+
+
+
+# Data Pre-processing Normalization
+
+### Taking care of Outliers and checking the interaction for Price by car typ and brand
+Log Transformation, to take care of the skewed distributions Pris, Miltal and Hästkrafter, so that we can stabilize variance and make the data more normally distributed. 
+
+```{r}
+#  Log transformation to take care of the skewed distributions.
+evcars$LogPris <- log(evcars$Pris)
+evcars$LogMiltal <-log(evcars$Miltal)
+evcars$LogHästkrafter <- log(evcars$Hästkrafter)
+
+# # Plotting the transformed distribution 
+num_var <- c("LogMiltal", "LogHästkrafter", "LogPris")
+
+for (variable in num_var) {
+var <- ggplot(evcars, aes(.data[[variable]])) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  ggtitle(paste("Distribution of", variable))
+print(var)
+}
+
+```
+
+### Result from the Log-transformed  
+
+* We can see a Normal Distribution, and the log transformation appears to have reduced the skewness of Pris, Miltal and Hästkrafter data and the distribution looks symmetrical. 
+* The histogram shows that the distribution has multiple peaks, this may be because there are different groups that have different price ranges.
+
+
+## Outliers
+Instead of removing the outliers we are going to cap them so we don't lose valuable data.
+```{r}
+# Capping outliers
+IQR_Miltal <- IQR(evcars$Miltal, na.rm = TRUE)
+IQR_Hästkrafter <- IQR(evcars$Hästkrafter, na.rm = TRUE)
+
+# Defining the upper and lower bounds using 1.5 times IQR
+upper_Miltal <- quantile(evcars$Miltal, 0.75, na.rm = TRUE) + 1.5 * IQR_Miltal
+lower_Miltal <- quantile(evcars$Miltal, 0.25, na.rm = TRUE) - 1.5 * IQR_Miltal
+
+upper_Hästkrafter <- quantile(evcars$Hästkrafter, 0.75, na.rm = TRUE) + 1.5 * IQR_Hästkrafter
+lower_hästkrafter <- quantile(evcars$Hästkrafter, 0.25, na.rm = TRUE) - 1.5 * IQR_Hästkrafter
+
+# Capping the outliers
+evcars$cap_Miltal <- pmin(pmax(evcars$Miltal, lower_Miltal, na.rm = TRUE), upper_Miltal, na.rm = TRUE)
+evcars$cap_Hästkrafter <- pmin(pmax(evcars$Hästkrafter, lower_hästkrafter, na.rm = TRUE), upper_Hästkrafter, na.rm = TRUE)
+
+# Log transformation after capping
+evcars$log_cap_Miltal <- log(evcars$cap_Miltal)
+evcars$log_cap_hästkrafter <- log(evcars$cap_Hästkrafter)
+
+# # Plotting the transformed and capped variables 
+num_var <- c("log_cap_Miltal", "log_cap_hästkrafter")
+
+for (variable in num_var) {
+var <- ggplot(evcars, aes(.data[[variable]])) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  ggtitle(paste("Distribution of", variable))
+print(var)
+}
+
+```
+
+### Result from the log transformation and capping
+
+* **Miltal:** The distribution of Miltal is fairly symmetrical, which suggests that the log transformation and capping of outliers have normalized the distribution. There's no longer a right skew, and the values are more centered around the peak of the distribution.   
+* **Hästkrafter:** The Hästkrafter distribution shows multiple peaks, which could suggest the presence of distinct groups or bands within the data. The transformation has mitigated the effect of outliers, resulting in a more regular, multi-modal, distribution.
+
+# Correlation Matrix efter the transformation of Numerical data
+```{r}
+# Checking the Correlation after the Log transformation
+num_features <- c("log_cap_Miltal", "log_cap_hästkrafter", "LogPris")
+corr_matrix <- cor(evcars[num_features], use = "complete.obs")
+print(corr_matrix)
+```
+
+```{r}
+# Visualizing the correlation matrix
+corrplot(corr_matrix, tl.col = "Brown", bg = "white", tl.srt = 35,
+         title = "\n\n Correlation Plot of Evcars data \n", 
+         addCoef.col = "black", type = "full", method = "circle")
+```
+
+### Result from the Correlation Matrix
+
+* **Miltal vs Hästkrafter:**  There is a very weak negative correlation between log-transformed and capped mileage and horsepower. Indicating that there's almost no linear relationship between the mileage and horsepower of the cars once the data was transformed. 
+* **Miltal vs Pris:** A moderate negative correlation is observed between log-transformed and capped mileage and log-transformed price. Indicating that, as the mileage of a car increases (even after adjusting for outliers), the price of the car tends to decrease, which aligns with expectations.
+* **Hästkrafter vs Pris:** There is a strong positive correlation between log-transformed and capped horsepower and log-transformed price. This suggests that cars with higher horsepower tend to be priced higher.
+
+
+# API, analysing ev cars registrations from an external database
+
+```{r}
+# API URL
+url <- "https://api.scb.se/OV0104/v1/doris/sv/ssd/START/TK/TK1001/TK1001A/PersBilarDrivMedel"
+
+# Converting JSON-structure to string
+json_data <- '{
+  "query": [
+    {
+      "code": "Region",
+      "selection": {
+        "filter": "item",
+        "values": [
+          "00",
+          "01",
+          "03",
+          "04",
+          "05",
+          "06",
+          "07",
+          "08",
+          "09",
+          "10",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25"
+        ]
+      }
+    },
+    {
+      "code": "Drivmedel",
+      "selection": {
+        "filter": "item",
+        "values": [
+          "120"
+        ]
+      }
+    },
+    {
+      "code": "Tid",
+      "selection": {
+        "filter": "item",
+        "values": [
+          "2014M01",
+          "2014M02",
+          "2014M03",
+          "2014M04",
+          "2014M05",
+          "2014M06",
+          "2014M07",
+          "2014M08",
+          "2014M09",
+          "2014M10",
+          "2014M11",
+          "2014M12",
+          "2015M01",
+          "2015M02",
+          "2015M03",
+          "2015M04",
+          "2015M05",
+          "2015M06",
+          "2015M07",
+          "2015M08",
+          "2015M09",
+          "2015M10",
+          "2015M11",
+          "2015M12",
+          "2016M01",
+          "2016M02",
+          "2016M03",
+          "2016M04",
+          "2016M05",
+          "2016M06",
+          "2016M07",
+          "2016M08",
+          "2016M09",
+          "2016M10",
+          "2016M11",
+          "2016M12",
+          "2017M01",
+          "2017M02",
+          "2017M03",
+          "2017M04",
+          "2017M05",
+          "2017M06",
+          "2017M07",
+          "2017M08",
+          "2017M09",
+          "2017M10",
+          "2017M11",
+          "2017M12",
+          "2018M01",
+          "2018M02",
+          "2018M03",
+          "2018M04",
+          "2018M05",
+          "2018M06",
+          "2018M07",
+          "2018M08",
+          "2018M09",
+          "2018M10",
+          "2018M11",
+          "2018M12",
+          "2019M01",
+          "2019M02",
+          "2019M03",
+          "2019M04",
+          "2019M05",
+          "2019M06",
+          "2019M07",
+          "2019M08",
+          "2019M09",
+          "2019M10",
+          "2019M11",
+          "2019M12",
+          "2020M01",
+          "2020M02",
+          "2020M03",
+          "2020M04",
+          "2020M05",
+          "2020M06",
+          "2020M07",
+          "2020M08",
+          "2020M09",
+          "2020M10",
+          "2020M11",
+          "2020M12",
+          "2021M01",
+          "2021M02",
+          "2021M03",
+          "2021M04",
+          "2021M05",
+          "2021M06",
+          "2021M07",
+          "2021M08",
+          "2021M09",
+          "2021M10",
+          "2021M11",
+          "2021M12",
+          "2022M01",
+          "2022M02",
+          "2022M03",
+          "2022M04",
+          "2022M05",
+          "2022M06",
+          "2022M07",
+          "2022M08",
+          "2022M09",
+          "2022M10",
+          "2022M11",
+          "2022M12",
+          "2023M01",
+          "2023M02",
+          "2023M03",
+          "2023M04",
+          "2023M05",
+          "2023M06",
+          "2023M07",
+          "2023M08",
+          "2023M09",
+          "2023M10",
+          "2023M11",
+          "2023M12",
+          "2024M01",
+          "2024M02",
+          "2024M03"
+        ]
+      }
+    }
+  ],
+  "response": {
+    "format": "json"
+  }
+}'
+
+# Sending a Request to API:t
+response <- POST(url, body = json_data, encode = "json", add_headers(`Content-Type` = "application/json"))
+
+# Checking staus and answer 
+if (http_status(response)$category == "success") {
+    data <- content(response, "parsed")
+    print(data)
+} else {
+    print(paste("Error in API call:", http_status(response)$message))
+}
+
+```
+
+```{r}
+# Loading the data from API SCB
+data <- content(response, type = "text", encoding = "UTF-8")
+data_parsed <- fromJSON(data)
+
+# Viewing the structure
+str(data_parsed)
+```
+```{r}
+# Data cleaning and structuring 
+
+# Converting "key" and "values" to a simple data frame
+flat_data <- data.frame(
+  Region = sapply(data_parsed$data$key, function(x) x[[1]]),
+  Drivmedel = sapply(data_parsed$data$key, function(x) x[[2]]),
+  Tid = sapply(data_parsed$data$key, function(x) x[[3]]),
+  Antal = as.numeric(unlist(data_parsed$data$values))
+)
+
+str(flat_data)
+```
+
+## Trend Analys 
+
+### Time-serie analys to see how new evcar registriations have changed over time
+```{r}
+# Converting "Tid" to a dataframe
+flat_data$Datum = as.Date(paste0(substr(flat_data$Tid, 1, 4), "-", substr(flat_data$Tid, 6, 7), "-01"))
+
+# Sorting data after dates
+flat_data <- flat_data[order(flat_data$Datum), ]
+
+# Time serie plot
+ggplot(flat_data, aes(Datum, Antal)) +
+  geom_line() +
+  labs(title = "Quantity of registered Evcars over time",
+       x = "Date", y = "Quantity of registered Evcars") +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Extracting year from 'Datum'
+flat_data$År = format(flat_data$Datum, "%Y")
+
+# Summarizing evcars per year
+år_summa <- aggregate(Antal ~ År, data = flat_data, sum)
+
+# Plotting a summary
+ggplot(år_summa, aes(x = År, y = Antal)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Summary of registered Evcars (Year)",
+       x = "Year",
+       y = "Summary of registered Evcars") +
+  theme_minimal()
+
+```
+
+### Result from the API
+Evcars are clearly in high demand, the trend is strong, we can see that evcar registrations have doubled in some years even with the knowledge of high Inflation that is currently in the Country. Further analys could be how new car registrations will effect used car prices?  
+
+
+
+# VIF checking Multicollinearity 
+
+```{r}
+# List over variables 
+included_vars <- c("LogPris", "Modellår", "log_cap_Miltal", "log_cap_hästkrafter", "Biltyp", "Märke", "Drivning", "Färg", "Län", "Modellår")
+
+# Calculate VIF for Linear Regression
+vif_values <- vif(lm(as.formula(paste("LogPris ~", paste(included_vars[!included_vars %in% "LogPris"], collapse = " + "))), data = evcars))
+vif_values
+```
+
+
+## Dummy variable
+Instead of using all categorical variables and their subcategories which could affect our model with overfitting and a multicollinearity problem, only a fem categories that are most representative will be chosen
+
+
+```{r}
+# Färg and Län being divided 
+evcars$färg1 <- ifelse(evcars$Färg %in% c("Svart", "Vit", "Grå"), "Vanlig", "Ovanlig")
+evcars$län1 <- ifelse(evcars$Län %in% c("Stockholm", "Skåne", "Västra Götaland", "Jönköping"), "Storalan", "Landsbygd")
+
+# Chaging them to factors
+evcars$färg1 <- as.factor(evcars$färg1)
+evcars$län1 <- as.factor(evcars$län1)
+
+# Creating a dummy variabel
+model_data <- model.matrix(~ Biltyp + Modellår + Drivning + Märke + färg1 + län1 -1, data = evcars)
+
+# Adding the dummy variable to the data set
+evcars <- cbind(evcars, model_data)
+
+```
+
+
+
+# Further analys of Multicollinearity 
+
+To inspect if we have predictor variables that are closely related to one another, we do this by computing the variance inflation factor (VIF).
+
+```{r}
+# List over variables 
+included_vars <- c("LogPris", "Modellår", "log_cap_Miltal", "log_cap_hästkrafter", "Biltyp", "Märke", "Drivning", "färg1", "län1", "Modellår")
+
+# Calculate VIF for Linear Regression
+vif_values <- vif(lm(as.formula(paste("LogPris ~", paste(included_vars[!included_vars %in% "LogPris"], collapse = " + "))), data = evcars))
+vif_values
+
+```
+
+### Result 
+* Märke has a high vif-values of 23 and Modellår of 7.6 and log_cap_hästkrafter of 5.5, indicating multicollinearity which could cause a problem for our regression model.
+
+
+# Model Linear Regression
+Given that the data set is only 421 observations a split data to training, validation, and test set has been chosen to fit the models. 3 linear Models will be created to see differences and by evaluation chose the best model to use for prediction.   
+
+```{r}
+# Splitting preferences 
+spec <- c(train = .6, validate = .2, test = .2)
+
+# Reproducibility
+set.seed(123)
+
+# Splitting the data set
+g <- sample(cut(seq(nrow(evcars)), nrow(evcars) * cumsum(c(0, spec)), labels = names(spec)))
+
+# Splitting the data set in train, validate and test
+train_data <- evcars[g == "train",]
+validate_data <- evcars[g == "validate",]
+test_data <- evcars[g == "test",]
+
+# Checking the data 
+names(train_data)
+str(evcars)
+```
+
+# Model 1
+
+```{r}
+# Hypotheses1: How price is predicted based on different attributes?
+lm1 <- lm(LogPris ~ log_cap_Miltal + log_cap_hästkrafter + Biltyp + Märke + Drivning, data = train_data)
+summary(lm1)
+
+```
+
+```{r}
+# Diagnostic plot for Lm1
+par(mfrow = c(2, 2))
+plot(lm1)
+```
+
+# Model 2
+
+```{r}
+# Hypotheses2: Which attributes have the greatest impact on Ev car Pricing?
+lm2 <- lm(LogPris ~ log_cap_Miltal * Biltyp + log_cap_hästkrafter * Märke + log_cap_Miltal + Biltyp + log_cap_hästkrafter + Märke + Drivning,  data = train_data)
+summary(lm2)
+```
+
+```{r}
+# Diagnostic plot for Lm2
+par(mfrow = c(2, 2))
+plot(lm2)
+```
+
+# Model 3
+
+```{r}
+# Hypotheses3: How do geographic differences affect the price of Evs?
+lm3 <- lm(LogPris ~ log_cap_Miltal + log_cap_hästkrafter + Biltyp + Märke + färg1 + län1, data = train_data)
+summary(lm3)
+
+```
+
+
+```{r}
+# Diagnostic plot for Lm3
+par(mfrow = c(2, 2))
+plot(lm3)
+```
+
+
+# Evaluation 
+
+```{r}
+# Calculate RMSE on Validation set
+pre_val_lm1 <- predict(lm1, newdata = validate_data)
+pre_val_lm2 <- predict(lm2, newdata = validate_data)
+pre_val_lm3 <- predict(lm3, newdata = validate_data)   
+  
+val_rmse_lm1 <- rmse(validate_data$LogPris, pre_val_lm1)  
+val_rmse_lm2 <- rmse(validate_data$LogPris, pre_val_lm2)
+val_rmse_lm3 <- rmse(validate_data$LogPris, pre_val_lm3)
+
+results <- data.frame(
+  Model = c("Model 1: Basic Effects", "Model 2: Interaction effects", "Model 3: Region effects"),
+  RMSE_val_data = c(val_rmse_lm1, val_rmse_lm2, val_rmse_lm3),
+  Adj_R_squared = c(summary(lm1)$adj.r.squared, summary(lm2)$adj.r.squared, summary(lm3)$adj.r.squared),
+  BIC = c(BIC(lm1), BIC(lm2), BIC(lm3))
+)
+
+results
+```
+
+### Result from the Validation 
+* Model 2 with the interaction terms shows the lowest RMSE indicating that its predictions are more precise tha  the other two models. Model 2 gives us the highest R^2 value with the lowest BIC value, which points to the fact that the model is more robust and fits the model better.
+
+### Result from the Diagnostic plots
+* Model 1 seems to have a more constant variance of residuals and no serious deviations from normality.
+* Model 2 indicates potential issues with non-normality and influential points.
+* Model 3 shares similar potential issues as lm2, with slight improvements in homoscedasticity.
+
+
+# Model 2 is chosen, evaluating model 2 on the test data
+
+```{r}
+# Evaluating model 2 on the test data
+pre_test_lm2 <- predict(lm2, newdata = test_data) 
+test_rmse_lm2 <- rmse(test_data$LogPris, pre_test_lm2)
+
+
+cat("Test RMSE for Model 2:", test_rmse_lm2, "\n")
+
+```
+
+### Plotting Model 2 
+```{r}
+# Creating a new dateframe for lm2
+
+lm2_data <- data.frame(actual = test_data$LogPris, predicted = pre_test_lm2)
+
+# Plotting the data
+ggplot(lm2_data, aes(x = actual, y = predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(title = "Comparison of Actual and Predicted Prices", x = "Actual Prices", y = "Predicted Prices") +
+  theme_minimal()
+
+
+```
+
+### Testing the modell 2
+
+```{r}
+# Creating a data frame 
+input_values <- data.frame(
+  Modellår = 2023,
+  log_cap_Miltal = log(10000),
+  log_cap_hästkrafter = log(350),
+  Biltyp = "Sedan",
+  Märke = "Tesla",
+  Drivning = "4",
+  färg1 = "Vit",
+  län1 = "Stockholm"
+)
+
+# Predict 
+predict_input_values <- predict(lm2, newdata = input_values)
+
+# Converting Pris, Miltal and Hästkrafter to its original scale and taking away log()
+predicted_price <- exp(predict_input_values)
+
+
+cat("Predicted Price:", predicted_price, "\n")
+```
+
+# Confidence and Prediction Intervall
+```{r}
+# CI and PI
+confidence_intervals <- predict(lm2, newdata = input_values, interval = "confidence", level = 0.95)
+prediction_intervals <- predict(lm2, newdata = input_values, interval = "prediction", level = 0.95)
+
+confidence_intervals
+prediction_intervals
+```
+
+```{r}
+# Converting log scaled Ci and PI to original price scale
+predicted_price = exp(12.74013)
+confidence_interval_lower = exp(12.62142)
+confidence_interval_upper = exp(12.85883)
+
+prediction_interval_lower = exp(12.41914)
+prediction_interval_upper = exp(13.06111)
+
+# Print out the converted prices
+cat("Predicted Price: ", predicted_price, " SEK\n")
+cat("Confidence Interval: [", confidence_interval_lower, ", ", confidence_interval_upper, "] SEK\n")
+cat("Prediction Interval: [", prediction_interval_lower, ", ", prediction_interval_upper, "] SEK\n")
+```
+
+
+```{r}
+# Saving the lm2 .rds fil
+saveRDS(lm2, file = "lm2.rds")
+```
+
+
+
+
+
+
+
+
